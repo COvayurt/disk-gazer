@@ -317,7 +317,7 @@ namespace DiskGazer.ViewModels
 
 		#region Run
 
-		public Task runExecuteCommand()
+		public Task RunExecuteCommand()
 		{
 			return RunAsync();
 		}
@@ -390,8 +390,10 @@ namespace DiskGazer.ViewModels
 
 		private void PinLineExecute()
 		{
-			_diskScores[0].IsPinned = true;
-			
+			lock (_lock)
+			{
+				_diskScores[0].IsPinned = true;
+			}
 		}
 
 		private bool CanPinLineExecute() => _diskScores[0].Data is not null;
@@ -400,15 +402,23 @@ namespace DiskGazer.ViewModels
 
 		#region Clear all chart lines
 
-		public DelegateCommand ClearLinesCommand => _clearLinesCommand ??= new DelegateCommand(ClearLinesExecute, CanClearLinesExecute);
-		private DelegateCommand _clearLinesCommand;
+		public void RunClearLinesExecute()
+		{
+			ClearLinesExecute();
+		}
+		 
 
 		private void ClearLinesExecute()
 		{
-			_diskScores.Clear();
-			_diskScores.Add(new DiskScore()); // Make diskScores[0] always exist.
-			UpdateScores();
-
+			lock (_lock)
+			{
+				Debug.WriteLine("Clearing Lines for:" + _diskScores);
+				_diskScores.Clear();
+				Debug.WriteLine("Cleared Lines for:" + _diskScores);
+				_diskScores.Add(new DiskScore()); // Make diskScores[0] always exist.
+				UpdateScores();
+			}
+			
 			SaveLogFileCommand.RaiseCanExecuteChanged();
 			SendLogClipboardCommand.RaiseCanExecuteChanged();
 			PinLineCommand.RaiseCanExecuteChanged();
@@ -536,34 +546,36 @@ namespace DiskGazer.ViewModels
 								"Error", MessageBoxButton.OK, MessageBoxImage.Information);
 				return;
 			}
-
-			// Prepare to store settings and data.
-			if (!_diskScores[0].IsPinned)
+			lock (_lock)
 			{
-				_diskScores[0] = new DiskScore();
+				// Prepare to store settings and data.
+				if (!_diskScores[0].IsPinned)
+				{
+					_diskScores[0] = new DiskScore();
+				}
+				else // If preceding score is pinned.
+				{
+					_diskScores.Insert(0, new DiskScore());
+				}
+
+				Trace.Assert(CurrentDisk is not null);
+
+				_diskScores[0].Disk = CurrentDisk.Clone();
+				_diskScores[0].StartTime = DateTime.Now;
+
+				_diskScores[0].BlockSize = Settings.Current.BlockSize;
+				_diskScores[0].BlockOffset = Settings.Current.BlockOffset;
+				_diskScores[0].AreaSize = Settings.Current.AreaSize;
+				_diskScores[0].AreaLocation = Settings.Current.AreaLocation;
+				_diskScores[0].AreaRatioInner = Settings.Current.AreaRatioInner;
+				_diskScores[0].AreaRatioOuter = Settings.Current.AreaRatioOuter;
+
+				_diskScores[0].NumRun = Settings.Current.NumRun;
+				_diskScores[0].Method = Settings.Current.Method;
+				UpdateScores();
 			}
-			else // If preceding score is pinned.
-			{
-				_diskScores.Insert(0, new DiskScore());
-			}
-
-			Trace.Assert(CurrentDisk is not null);
-
-			_diskScores[0].Disk = CurrentDisk.Clone();
-			_diskScores[0].StartTime = DateTime.Now;
-
-			_diskScores[0].BlockSize = Settings.Current.BlockSize;
-			_diskScores[0].BlockOffset = Settings.Current.BlockOffset;
-			_diskScores[0].AreaSize = Settings.Current.AreaSize;
-			_diskScores[0].AreaLocation = Settings.Current.AreaLocation;
-			_diskScores[0].AreaRatioInner = Settings.Current.AreaRatioInner;
-			_diskScores[0].AreaRatioOuter = Settings.Current.AreaRatioOuter;
-
-			_diskScores[0].NumRun = Settings.Current.NumRun;
-			_diskScores[0].Method = Settings.Current.Method;
-
 			// Reset scores and chart.
-			UpdateScores();
+			
 
 			try
 			{
@@ -602,33 +614,41 @@ namespace DiskGazer.ViewModels
 			Op.StopReadAnalyze(new Progress<ProgressInfo>(UpdateProgress));
 		}
 
+		object _lock = new object();
 		private void UpdateProgress(ProgressInfo info)
 		{
-			// Update scores and chart.
-			if ((info.Data is not null) && !Op.IsCanceled)
+			lock (_lock)
 			{
-				_diskScores[0].Data = info.Data;
+				// Update scores and chart.
+				if ((info.Data is not null) && !Op.IsCanceled)
+				{
+					_diskScores[0].Data = info.Data;
+					UpdateScores();
+				}
 
-				UpdateScores();
-			}
-
-			// Update status.
-			if (info.Status is not null)
-			{
-				Status = info.Status;
-			}
-
-			// Update inner status.
-			if (info.InnerStatus is not null)
-			{
-				InnerStatus = info.IsInnerStatusRenewed
-					? info.InnerStatus
-					: InnerStatus.Insert(0, info.InnerStatus + Environment.NewLine);
+				// Update status.
+				if (info.Status is not null)
+				{
+					Status = info.Status;
+				}
+				Debug.WriteLine("info.InnerStatus is: " + info.InnerStatus);
+				// Update inner status.
+			
+				if (info.InnerStatus is not null)
+				{
+					Debug.WriteLine("InnerStatus information: " + info.IsInnerStatusRenewed);
+					Debug.WriteLine(" info.InnerStatus: " + info);
+					Debug.WriteLine(" Environment.NewLine:" + Environment.NewLine);
+					Debug.WriteLine("InnerStatus:" + InnerStatus);
+					InnerStatus = info.IsInnerStatusRenewed ? info.InnerStatus : InnerStatus.Insert(0, info.InnerStatus + Environment.NewLine);
+				}
 			}
 		}
 
 		private void UpdateScores()
 		{
+			Debug.WriteLine("Updating scores for " + CurrentDisk.Name);
+			Debug.WriteLine("_diskScores[0].Data is " + _diskScores.Count);
 			if (_diskScores[0].Data is null)
 			{
 				ScoreMax = 0;
@@ -637,8 +657,11 @@ namespace DiskGazer.ViewModels
 			}
 			else
 			{
+				Debug.WriteLine("_diskScores[0].Data 1" + _diskScores.Count);
 				ScoreMax = _diskScores[0].Data.Values.Max();
+				Debug.WriteLine("_diskScores[0].Data 2" + _diskScores.Count);
 				ScoreMin = _diskScores[0].Data.Values.Min();
+				Debug.WriteLine("_diskScores[0].Data 3" + _diskScores.Count);
 				ScoreAvg = _diskScores[0].Data.Values.Average();
 			}
 		}
